@@ -1,0 +1,16 @@
+version: '3.8'
+
+services:
+  telegram_rh_bot:
+    build: .
+    container_name: telegram_rh_bot
+    restart: always
+    env_file:
+      - .env
+    volumes:
+      # Monta o banco de dados como um volume para persistência dos dados
+      # Nota: É recomendável que o arquivo bot_rh.db já exista localmente, 
+      # caso contrário, o Docker pode criar um diretório no lugar.
+      # Para evitar isso, crie um arquivo vazio antes de rodar: `touch bot_rh.db`
+      - ./bot_rh.db:/app/bot_rh.db
+
