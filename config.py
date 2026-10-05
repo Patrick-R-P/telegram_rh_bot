@@ -6,6 +6,15 @@ systemd (ver README.md).
 """
 
 import os
+from dotenv import load_dotenv
+
+# Carrega as variáveis do arquivo .env para o ambiente
+load_dotenv()
+
+# Agora esta linha vai encontrar o token corretamente
+TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+
+
 
 # --- Telegram ---
 TELEGRAM_BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
