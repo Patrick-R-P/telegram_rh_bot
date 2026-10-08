@@ -239,7 +239,12 @@ async def classificar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Informe o setor: /classificar <chat_id> setor NOME_DO_SETOR")
         return
 
-    db.classificar_grupo(chat_id, tipo, setor)
+        if not db.classificar_grupo(chat_id, tipo, setor):
+            await update.message.reply_text(
+                f"Não achei o grupo {chat_id} cadastrado ainda. Confere com /grupos, "
+                "ou remove e readiciona o bot nesse grupo pra ele se cadastrar sozinho."
+        )
+        return
     extra = f" (setor: {setor})" if setor else ""
     await update.message.reply_text(f"Grupo {chat_id} classificado como '{tipo}'{extra}.")
 

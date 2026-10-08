@@ -130,8 +130,8 @@ def remover_grupo(chat_id):
 
 def classificar_grupo(chat_id, tipo, setor=None):
     with get_conn() as conn:
-        conn.execute("UPDATE grupos SET tipo = ?, setor = ? WHERE chat_id = ?", (tipo, setor, chat_id))
-
+        cur = conn.execute("UPDATE grupos SET tipo = ?, setor = ? WHERE chat_id = ?", (tipo, setor, chat_id))
+        return cur.rowcount > 0
 
 def listar_grupos_gerais():
     with get_conn() as conn:
