@@ -59,11 +59,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     ja_cadastrado = db.get_funcionario_by_telegram_id(user.id)
     if ja_cadastrado:
+        if ja_cadastrado["offboarded_em"]:
+            await update.message.reply_text("Seu cadastro não está mais ativo. Fale com o RH.")
+            return ConversationHandler.END
         primeiro_nome = (ja_cadastrado["nome"] or "").split(" ")[0] or "tudo bem"
-        await update.message.reply_text(
-            f"Oi, {primeiro_nome}! Seu cadastro já está confirmado. "
-            "Se precisar de outro convite, fale com o RH."
-        )
+        await update.message.reply_text(f"Oi, {primeiro_nome}! Vou te mandar os convites de novo.")
+        await enviar_convites(context, ja_cadastrado)
         return ConversationHandler.END
 
     context.user_data.clear()
