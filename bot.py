@@ -1,29 +1,7 @@
-"""
-Processo principal do bot - fica rodando continuamente via polling.
-
-Fluxo de onboarding (ver README.md para o porquê deste desenho):
-  1. /start -> bot pede o nome completo
-  2. Bot busca no IXC por colaboradores ATIVOS com esse nome
-  3. Se achar candidato(s), pede para o funcionário compartilhar o contato do
-     Telegram (botão nativo - devolve um telefone verificado pela plataforma)
-  4. Bot confere esse telefone contra o(s) candidato(s); só com uma
-     correspondência única ele vincula a conta e envia os convites dos
-     grupos (gerais + do setor). Sem correspondência, avisa o RH em vez de
-     travar ou arriscar vincular a pessoa errada.
-O nome sozinho NUNCA autentica - ele só reduz a lista de candidatos. Quem
-autentica é o telefone confirmado pelo Telegram.
-
-Além disso, o bot:
-  - Detecta quando é adicionado/promovido a admin num grupo e o registra
-  - /classificar <chat_id> geral|setor [nome_setor]: comando administrativo
-  - /grupos: lista grupos conhecidos ainda não classificados
-
-offboarding_check.py roda como script separado, via cron, usando o mesmo
-token deste bot para remover ex-funcionários dos grupos.
-"""
-
 import asyncio
 import logging
+import os
+import socket
 from datetime import datetime, timedelta, timezone
 
 from telegram import (
@@ -49,6 +27,7 @@ import ixc_client
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
 )
+logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 AGUARDANDO_NOME, AGUARDANDO_CONTATO = range(2)
@@ -156,13 +135,22 @@ async def receber_contato(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cancelar(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data.clear()
-    await update.message.reply_text("Ok, cadastro cancelado. Envie /start para tentar de novo.", reply_markup=ReplyKeyboardRemove())
+    await update.message.reply_text(
+        "Ok, cadastro cancelado. Envie /start para tentar de novo.",
+        reply_markup=ReplyKeyboardRemove(),
+    )
     return ConversationHandler.END
 
 
 async def enviar_convites(context: ContextTypes.DEFAULT_TYPE, funcionario: dict):
     destino = funcionario["telegram_user_id"]
-    grupos_ids = set(db.listar_grupos_gerais()) | set(db.listar_grupos_setor(funcionario["setor"]))
+    gerais = db.listar_grupos_gerais()
+    do_setor = db.listar_grupos_setor(funcionario["setor"])
+    logger.info(
+        "Convites ixc_id=%s setor=%r grupos_gerais=%s grupos_do_setor=%s db=%s",
+        funcionario["ixc_id"], funcionario["setor"], gerais, do_setor, db.DB_PATH,
+    )
+    grupos_ids = set(gerais) | set(do_setor)
 
     if not grupos_ids:
         await context.bot.send_message(
@@ -240,14 +228,17 @@ async def classificar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Informe o setor: /classificar <chat_id> setor NOME_DO_SETOR")
         return
 
-        if not db.classificar_grupo(chat_id, tipo, setor):
-            await update.message.reply_text(
-                f"Não achei o grupo {chat_id} cadastrado ainda. Confere com /grupos, "
-                "ou remove e readiciona o bot nesse grupo pra ele se cadastrar sozinho."
+    if not db.classificar_grupo(chat_id, tipo, setor):
+        await update.message.reply_text(
+            f"Não achei o grupo {chat_id} cadastrado ainda. Confere com /status, "
+            "ou remove e readiciona o bot nesse grupo pra ele se cadastrar sozinho."
         )
         return
-    extra = f" (setor: {setor})" if setor else ""
-    await update.message.reply_text(f"Grupo {chat_id} classificado como '{tipo}'{extra}.")
+
+    grupo = db.get_grupo(chat_id)
+    await update.message.reply_text(
+        f"Gravado no banco: {grupo['chat_id']} ({grupo['titulo']}) tipo={grupo['tipo']} setor={grupo['setor']}."
+    )
 
 
 async def listar_grupos_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -259,6 +250,15 @@ async def listar_grupos_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
     linhas = [f"• {g['titulo']} (id {g['chat_id']})" for g in pendentes]
     await update.message.reply_text("Grupos ainda não classificados:\n" + "\n".join(linhas))
+
+
+async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id not in config.ADMIN_TELEGRAM_IDS:
+        return
+    linhas = [f"host: {socket.gethostname()}", f"pid: {os.getpid()}", f"db: {db.DB_PATH}"]
+    for g in db.listar_grupos():
+        linhas.append(f"{g['chat_id']} | {g['titulo']} | {g['tipo']} | {g['setor']}")
+    await update.message.reply_text("\n".join(linhas))
 
 
 def main():
@@ -280,9 +280,10 @@ def main():
     application.add_handler(conv_handler)
     application.add_handler(CommandHandler("classificar", classificar))
     application.add_handler(CommandHandler("grupos", listar_grupos_cmd))
+    application.add_handler(CommandHandler("status", status))
     application.add_handler(ChatMemberHandler(on_bot_membership_change, ChatMemberHandler.MY_CHAT_MEMBER))
 
-    logger.info("Bot iniciado (polling)...")
+    logger.info("Bot iniciado (polling) pid=%s db=%s", os.getpid(), db.DB_PATH)
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
