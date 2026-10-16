@@ -93,6 +93,22 @@ def marcar_offboarded(ixc_id):
         conn.execute("UPDATE funcionarios SET offboarded_em = ? WHERE ixc_id = ?", (_now_iso(), ixc_id))
 
 
+def listar_vinculados_ativos():
+    with get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM funcionarios WHERE telegram_user_id IS NOT NULL AND offboarded_em IS NULL"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def reativar_funcionario(ixc_id):
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE funcionarios SET status_ixc = 'Ativo', offboarded_em = NULL WHERE ixc_id = ?",
+            (ixc_id,),
+        )
+
+
 def upsert_grupo(chat_id, titulo):
     with get_conn() as conn:
         conn.execute(
@@ -100,6 +116,25 @@ def upsert_grupo(chat_id, titulo):
                ON CONFLICT(chat_id) DO UPDATE SET titulo = excluded.titulo""",
             (chat_id, titulo, _now_iso()),
         )
+
+
+def migrar_grupo(chat_id_antigo, chat_id_novo):
+    with get_conn() as conn:
+        antigo = conn.execute("SELECT * FROM grupos WHERE chat_id = ?", (chat_id_antigo,)).fetchone()
+        if not antigo:
+            return False
+        novo = conn.execute("SELECT * FROM grupos WHERE chat_id = ?", (chat_id_novo,)).fetchone()
+        if novo:
+            conn.execute(
+                "UPDATE grupos SET tipo = COALESCE(tipo, ?), setor = COALESCE(setor, ?) WHERE chat_id = ?",
+                (antigo["tipo"], antigo["setor"], chat_id_novo),
+            )
+            conn.execute("DELETE FROM grupos WHERE chat_id = ?", (chat_id_antigo,))
+        else:
+            conn.execute(
+                "UPDATE grupos SET chat_id = ? WHERE chat_id = ?", (chat_id_novo, chat_id_antigo)
+            )
+        return True
 
 
 def remover_grupo(chat_id):

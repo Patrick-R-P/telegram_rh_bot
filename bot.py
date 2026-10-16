@@ -23,6 +23,7 @@ from telegram.ext import (
 import config
 import database as db
 import ixc_client
+from grupos import id_atual
 
 logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s", level=logging.INFO
@@ -39,8 +40,21 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ja_cadastrado = db.get_funcionario_by_telegram_id(user.id)
     if ja_cadastrado:
         if ja_cadastrado["offboarded_em"]:
-            await update.message.reply_text("Seu cadastro não está mais ativo. Fale com o RH.")
-            return ConversationHandler.END
+            try:
+                atual = await asyncio.to_thread(
+                    ixc_client.buscar_colaborador_por_id, ja_cadastrado["ixc_id"]
+                )
+            except Exception:
+                logger.exception("Falha ao consultar o IXC para ixc_id=%s", ja_cadastrado["ixc_id"])
+                await update.message.reply_text(
+                    "Não consegui consultar seu cadastro agora. Tente de novo em instantes."
+                )
+                return ConversationHandler.END
+            if not atual or atual["ativo"] != config.IXC_VALOR_ATIVO:
+                await update.message.reply_text("Seu cadastro não está mais ativo. Fale com o RH.")
+                return ConversationHandler.END
+            db.reativar_funcionario(ja_cadastrado["ixc_id"])
+            ja_cadastrado = db.get_funcionario(ja_cadastrado["ixc_id"])
         primeiro_nome = (ja_cadastrado["nome"] or "").split(" ")[0] or "tudo bem"
         await update.message.reply_text(f"Oi, {primeiro_nome}! Vou te mandar os convites de novo.")
         await enviar_convites(context, ja_cadastrado)
@@ -168,6 +182,8 @@ async def enviar_convites(context: ContextTypes.DEFAULT_TYPE, funcionario: dict)
             ),
         )
         return
+
+    grupos_ids = list(dict.fromkeys([await id_atual(context.bot, c) for c in grupos_ids]))
 
     pendentes = []
     for chat_id in grupos_ids:
