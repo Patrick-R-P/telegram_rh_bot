@@ -150,7 +150,7 @@ async def enviar_convites(context: ContextTypes.DEFAULT_TYPE, funcionario: dict)
         "Convites ixc_id=%s setor=%r grupos_gerais=%s grupos_do_setor=%s db=%s",
         funcionario["ixc_id"], funcionario["setor"], gerais, do_setor, db.DB_PATH,
     )
-    grupos_ids = set(gerais) | set(do_setor)
+    grupos_ids = list(dict.fromkeys(gerais + do_setor))
 
     if not grupos_ids:
         await context.bot.send_message(
@@ -169,9 +169,29 @@ async def enviar_convites(context: ContextTypes.DEFAULT_TYPE, funcionario: dict)
         )
         return
 
-    expira_em = datetime.now(timezone.utc) + timedelta(hours=config.CONVITE_VALIDADE_HORAS)
-    linhas = ["Aqui estão os grupos que você deve entrar:"]
+    pendentes = []
     for chat_id in grupos_ids:
+        try:
+            membro = await context.bot.get_chat_member(chat_id, destino)
+            if membro.status in ("member", "administrator", "creator"):
+                continue
+        except Exception:
+            logger.warning("Não consegui checar se %s já está no grupo %s", destino, chat_id)
+        pendentes.append(chat_id)
+
+    if not pendentes:
+        await context.bot.send_message(
+            chat_id=destino,
+            text="Você já está em todos os grupos do seu setor. Se faltar algum, fale com o RH.",
+        )
+        return
+
+    await context.bot.send_message(
+        chat_id=destino,
+        text=f"Esses são os seus grupos. Os links expiram em {config.CONVITE_VALIDADE_HORAS}h:",
+    )
+    expira_em = datetime.now(timezone.utc) + timedelta(hours=config.CONVITE_VALIDADE_HORAS)
+    for chat_id in pendentes:
         try:
             chat = await context.bot.get_chat(chat_id)
             link = await context.bot.create_chat_invite_link(
@@ -179,12 +199,17 @@ async def enviar_convites(context: ContextTypes.DEFAULT_TYPE, funcionario: dict)
                 member_limit=config.CONVITE_LIMITE_USOS,
                 expire_date=expira_em,
             )
-            linhas.append(f"• {chat.title}: {link.invite_link}")
+            logger.info(
+                "Link gerado grupo=%s limite=%s expira=%s",
+                chat_id, link.member_limit, link.expire_date,
+            )
+            await context.bot.send_message(chat_id=destino, text=f"{chat.title}\n{link.invite_link}")
         except Exception:
             logger.exception("Falha ao gerar convite para o grupo %s", chat_id)
-            linhas.append("• (falha ao gerar um dos links — avise o RH/TI)")
-
-    await context.bot.send_message(chat_id=destino, text="\n".join(linhas))
+            await context.bot.send_message(
+                chat_id=destino,
+                text="Não consegui gerar o link de um dos grupos. Avise o RH/TI.",
+            )
 
 
 async def on_bot_membership_change(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -201,7 +226,7 @@ async def on_bot_membership_change(update: Update, context: ContextTypes.DEFAULT
             aviso += "\n⚠️ O bot ainda não é administrador aqui - promova-o para liberar convites e remoções."
         aviso += (
             f"\nClassifique com:\n/classificar {chat.id} geral"
-            f"\nou:\n/classificar {chat.id} setor NOME_DO_SETOR"
+            f"\nou:\n/classificar {chat.id} setor NUMERO_DO_SETOR"
         )
         await context.bot.send_message(chat_id=config.OPS_CHAT_ID, text=aviso)
     elif novo_status in ("left", "kicked"):
@@ -214,19 +239,23 @@ async def classificar(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     args = context.args
-    if len(args) < 2 or args[1].lower() not in ("geral", "setor"):
+    tipo = args[1].lower() if len(args) > 1 else ""
+    valido = (
+        args[0].lstrip("-").isdigit()
+        and (
+            (tipo == "geral" and len(args) == 2)
+            or (tipo == "setor" and len(args) == 3 and args[2].isdigit())
+        )
+    ) if args else False
+    if not valido:
         await update.message.reply_text(
-            "Uso:\n/classificar <chat_id> geral\n/classificar <chat_id> setor NOME_DO_SETOR"
+            "Uso:\n/classificar <chat_id> geral\n"
+            "/classificar <chat_id> setor <número do setor no IXC>"
         )
         return
 
     chat_id = int(args[0])
-    tipo = args[1].lower()
-    setor = args[2].strip().lower() if tipo == "setor" and len(args) > 2 else None
-
-    if tipo == "setor" and not setor:
-        await update.message.reply_text("Informe o setor: /classificar <chat_id> setor NOME_DO_SETOR")
-        return
+    setor = args[2] if tipo == "setor" else None
 
     if not db.classificar_grupo(chat_id, tipo, setor):
         await update.message.reply_text(
@@ -265,22 +294,24 @@ def main():
     db.init_db()
     application = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
 
+    novas = filters.UpdateType.MESSAGE
+
     conv_handler = ConversationHandler(
-        entry_points=[CommandHandler("start", start)],
+        entry_points=[CommandHandler("start", start, filters=novas)],
         states={
-            AGUARDANDO_NOME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receber_nome)],
+            AGUARDANDO_NOME: [MessageHandler(novas & filters.TEXT & ~filters.COMMAND, receber_nome)],
             AGUARDANDO_CONTATO: [
-                MessageHandler(filters.CONTACT, receber_contato),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, contato_invalido),
+                MessageHandler(novas & filters.CONTACT, receber_contato),
+                MessageHandler(novas & filters.TEXT & ~filters.COMMAND, contato_invalido),
             ],
         },
-        fallbacks=[CommandHandler("cancelar", cancelar)],
+        fallbacks=[CommandHandler("cancelar", cancelar, filters=novas)],
     )
 
     application.add_handler(conv_handler)
-    application.add_handler(CommandHandler("classificar", classificar))
-    application.add_handler(CommandHandler("grupos", listar_grupos_cmd))
-    application.add_handler(CommandHandler("status", status))
+    application.add_handler(CommandHandler("classificar", classificar, filters=novas))
+    application.add_handler(CommandHandler("grupos", listar_grupos_cmd, filters=novas))
+    application.add_handler(CommandHandler("status", status, filters=novas))
     application.add_handler(ChatMemberHandler(on_bot_membership_change, ChatMemberHandler.MY_CHAT_MEMBER))
 
     logger.info("Bot iniciado (polling) pid=%s db=%s", os.getpid(), db.DB_PATH)
